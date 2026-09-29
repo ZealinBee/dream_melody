@@ -1,55 +1,40 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import type { NextRequest } from "next/server";
 
 import { INSTRUMENTS, isInstrument } from "@/lib/instruments";
 import type { Note } from "@/lib/pitch";
-import { deleteRecording, getRecording, isValidId, RECORDINGS_DIR, updateRecording } from "@/lib/recordings";
+import { audioFileName, audioPathname, baseMimeType, isValidId, MAX_AUDIO_BYTES } from "@/lib/recording-ids";
+import { deleteRecording, getRecording, recordingAudio, updateRecording } from "@/lib/recordings";
+import { storageMode, writeLocalAudio } from "@/lib/storage";
 
 async function find(ctx: RouteContext<"/api/recordings/[id]">) {
   const { id } = await ctx.params;
   return isValidId(id) ? getRecording(id) : null;
 }
 
-/** Streams the audio file. Supports Range requests, which Safari needs to play audio. */
+/** Streams the audio. Supports Range requests, which Safari needs to play audio. */
 export async function GET(request: NextRequest, ctx: RouteContext<"/api/recordings/[id]">) {
   const meta = await find(ctx);
   if (!meta) return new Response("Not found", { status: 404 });
+  return recordingAudio(meta, request.headers.get("range"));
+}
 
-  let data: Buffer;
-  try {
-    data = await readFile(path.join(RECORDINGS_DIR, meta.file));
-  } catch {
-    return new Response("Not found", { status: 404 });
-  }
+/**
+ * Local storage only: the raw audio for a new take. (With Vercel Blob the
+ * browser uploads straight to Blob instead — see ../upload/route.ts.)
+ */
+export async function PUT(request: NextRequest, ctx: RouteContext<"/api/recordings/[id]">) {
+  if (storageMode !== "local") return new Response("Upload to Blob instead", { status: 405 });
+  const { id } = await ctx.params;
+  const mimeType = baseMimeType(request.headers.get("content-type"));
+  if (!isValidId(id)) return new Response("Bad id", { status: 400 });
+  if (!mimeType) return Response.json({ error: "Unsupported audio type" }, { status: 415 });
 
-  const headers = {
-    "Content-Type": meta.mimeType,
-    "Accept-Ranges": "bytes",
-    "Cache-Control": "private, max-age=31536000, immutable",
-  };
+  const audio = Buffer.from(await request.arrayBuffer());
+  if (audio.length === 0) return Response.json({ error: "Empty recording" }, { status: 400 });
+  if (audio.length > MAX_AUDIO_BYTES) return Response.json({ error: "Recording too large" }, { status: 413 });
 
-  const range = request.headers.get("range")?.match(/^bytes=(\d*)-(\d*)$/);
-  if (range) {
-    const size = data.length;
-    const start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
-    const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
-    if (start >= size || start > end) {
-      return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${size}` } });
-    }
-    return new Response(new Uint8Array(data.subarray(start, end + 1)), {
-      status: 206,
-      headers: {
-        ...headers,
-        "Content-Range": `bytes ${start}-${end}/${size}`,
-        "Content-Length": String(end - start + 1),
-      },
-    });
-  }
-
-  return new Response(new Uint8Array(data), {
-    headers: { ...headers, "Content-Length": String(data.length) },
-  });
+  await writeLocalAudio(audioPathname(audioFileName(id, mimeType)), audio);
+  return new Response(null, { status: 204 });
 }
 
 const MAX_NOTES = 20000;

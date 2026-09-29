@@ -7,18 +7,46 @@ import InstrumentPicker from "@/components/InstrumentPicker";
 import RecordingItem from "@/components/RecordingItem";
 import type { Instrument } from "@/lib/instruments";
 import type { Note } from "@/lib/pitch";
+import { audioFileName, audioPathname, baseMimeType, newRecordingId } from "@/lib/recording-ids";
 import type { RecordingMeta } from "@/lib/recordings";
+import type { StorageMode } from "@/lib/storage";
 
-type SaveState = { kind: "idle" } | { kind: "saving" } | { kind: "saved"; id: string } | { kind: "error" };
+type SaveState =
+  | { kind: "idle" }
+  | { kind: "saving"; progress: number | null }
+  | { kind: "saved"; id: string }
+  | { kind: "error"; message: string };
+
+async function errorText(res: Response) {
+  const body = await res.json().catch(() => null);
+  return (body as { error?: string } | null)?.error ?? `Request failed (${res.status})`;
+}
+
+/** Stores the audio: straight to Vercel Blob when deployed, or via our API locally. */
+async function uploadAudio(storage: StorageMode, id: string, blob: Blob, mimeType: string, onProgress: (p: number) => void) {
+  if (storage === "blob") {
+    const { upload } = await import("@vercel/blob/client");
+    await upload(audioPathname(audioFileName(id, mimeType)), blob, {
+      access: "private",
+      handleUploadUrl: "/api/recordings/upload",
+      contentType: mimeType,
+      multipart: blob.size > 20 * 1024 * 1024,
+      onUploadProgress: ({ percentage }) => onProgress(percentage / 100),
+    });
+    return;
+  }
+  const res = await fetch(`/api/recordings/${id}`, { method: "PUT", headers: { "Content-Type": mimeType }, body: blob });
+  if (!res.ok) throw new Error(await errorText(res));
+}
 
 function formatTime(seconds: number) {
   const s = Math.round(seconds);
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-export default function RecordingStudio() {
+export default function RecordingStudio({ storage }: { storage: StorageMode }) {
   const [recordings, setRecordings] = useState<RecordingMeta[] | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
   const [open, setOpen] = useState(false);
   const listId = useId();
@@ -28,11 +56,11 @@ export default function RecordingStudio() {
   const refresh = useCallback(async () => {
     try {
       const res = await fetch("/api/recordings", { cache: "no-store" });
-      if (!res.ok) throw new Error(String(res.status));
+      if (!res.ok) throw new Error(await errorText(res));
       setRecordings(await res.json());
-      setLoadFailed(false);
-    } catch {
-      setLoadFailed(true);
+      setLoadError(null);
+    } catch (err) {
+      setLoadError((err as Error).message);
     }
   }, []);
 
@@ -59,26 +87,32 @@ export default function RecordingStudio() {
     return next;
   }, []);
 
-  const handleRecorded = useCallback(async (blob: Blob, seconds: number, peaks: number[]) => {
-    setSave({ kind: "saving" });
-    try {
-      const res = await fetch("/api/recordings", {
-        method: "POST",
-        headers: {
-          "Content-Type": blob.type,
-          "X-Duration-Seconds": seconds.toFixed(2),
-          "X-Peaks": peaks.join(","),
-        },
-        body: blob,
-      });
-      if (!res.ok) throw new Error(String(res.status));
-      const take: RecordingMeta = await res.json();
-      setRecordings((prev) => [take, ...(prev ?? [])]);
-      setSave({ kind: "saved", id: take.id });
-    } catch {
-      setSave({ kind: "error" });
-    }
-  }, []);
+  const handleRecorded = useCallback(
+    async (blob: Blob, seconds: number, peaks: number[]) => {
+      const mimeType = baseMimeType(blob.type);
+      if (!mimeType) {
+        setSave({ kind: "error", message: `This browser recorded ${blob.type || "an unknown format"}, which isn't supported.` });
+        return;
+      }
+      setSave({ kind: "saving", progress: null });
+      try {
+        const id = newRecordingId();
+        await uploadAudio(storage, id, blob, mimeType, (progress) => setSave({ kind: "saving", progress }));
+        const res = await fetch("/api/recordings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, mimeType, seconds, peaks }),
+        });
+        if (!res.ok) throw new Error(await errorText(res));
+        const take: RecordingMeta = await res.json();
+        setRecordings((prev) => [take, ...(prev ?? [])]);
+        setSave({ kind: "saved", id: take.id });
+      } catch (err) {
+        setSave({ kind: "error", message: (err as Error).message });
+      }
+    },
+    [storage],
+  );
 
   const setInstruments = useCallback(
     async (id: string, instruments: Instrument[]) => {
@@ -115,9 +149,10 @@ export default function RecordingStudio() {
         <HumRecorder onRecorded={handleRecorded} onStart={() => setSave({ kind: "idle" })} />
 
         <p className="mt-2 min-h-5 text-sm text-grey-1" aria-live="polite">
-          {save.kind === "saving" && "Saving…"}
+          {save.kind === "saving" &&
+            (save.progress === null ? "Saving…" : `Uploading… ${Math.round(save.progress * 100)}%`)}
           {latest && `Saved a ${formatTime(latest.seconds)} take.`}
-          {save.kind === "error" && "Couldn't save that recording. Is the dev server running?"}
+          {save.kind === "error" && `Couldn't save that recording. ${save.message}`}
         </p>
 
         {latest && (
@@ -157,8 +192,8 @@ export default function RecordingStudio() {
       </button>
 
       <section id={listId} hidden={!open} className="mt-6 text-left">
-        {loadFailed && <p className="text-center text-sm text-grey-1">Couldn&apos;t load recordings.</p>}
-        {!loadFailed && recordings?.length === 0 && (
+        {loadError && <p className="text-center text-sm text-grey-1">Couldn&apos;t load recordings. {loadError}</p>}
+        {!loadError && recordings?.length === 0 && (
           <p className="text-center text-sm text-grey-1">No recordings yet. Hum something above.</p>
         )}
         {recordings && recordings.length > 0 && (

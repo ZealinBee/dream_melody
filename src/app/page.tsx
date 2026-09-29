@@ -1,4 +1,5 @@
 import RecordingStudio from "@/components/RecordingStudio";
+import { storageMode } from "@/lib/storage";
 
 export default function Home() {
   return (
@@ -9,11 +10,11 @@ export default function Home() {
           Hum the tune in your head
         </h1>
         <p className="mt-4 text-lg leading-relaxed text-grey-1">
-          Record for as long as you like. Every take is saved on this machine.
+          Record for as long as you like. Every take is saved to your recordings.
         </p>
 
         <div className="mt-10">
-          <RecordingStudio />
+          <RecordingStudio storage={storageMode} />
         </div>
       </div>
     </main>

@@ -9,7 +9,7 @@ import type { Instrument } from "@/lib/instruments";
 import type { Note } from "@/lib/pitch";
 import { audioFileName, audioPathname, baseMimeType, newRecordingId } from "@/lib/recording-ids";
 import type { RecordingMeta } from "@/lib/recordings";
-import type { StorageMode } from "@/lib/storage";
+import type { UploadMode } from "@/lib/storage";
 
 type SaveState =
   | { kind: "idle" }
@@ -23,8 +23,8 @@ async function errorText(res: Response) {
 }
 
 /** Stores the audio: straight to Vercel Blob when deployed, or via our API locally. */
-async function uploadAudio(storage: StorageMode, id: string, blob: Blob, mimeType: string, onProgress: (p: number) => void) {
-  if (storage === "blob") {
+async function uploadAudio(storage: UploadMode, id: string, blob: Blob, mimeType: string, onProgress: (p: number) => void) {
+  if (storage === "blob-direct") {
     const { upload } = await import("@vercel/blob/client");
     await upload(audioPathname(audioFileName(id, mimeType)), blob, {
       access: "private",
@@ -44,7 +44,7 @@ function formatTime(seconds: number) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-export default function RecordingStudio({ storage }: { storage: StorageMode }) {
+export default function RecordingStudio({ storage }: { storage: UploadMode }) {
   const [recordings, setRecordings] = useState<RecordingMeta[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [save, setSave] = useState<SaveState>({ kind: "idle" });

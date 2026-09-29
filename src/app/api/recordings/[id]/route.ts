@@ -4,7 +4,7 @@ import { INSTRUMENTS, isInstrument } from "@/lib/instruments";
 import type { Note } from "@/lib/pitch";
 import { audioFileName, audioPathname, baseMimeType, isValidId, MAX_AUDIO_BYTES } from "@/lib/recording-ids";
 import { deleteRecording, getRecording, recordingAudio, updateRecording } from "@/lib/recordings";
-import { storageMode, writeLocalAudio } from "@/lib/storage";
+import { uploadMode, writeAudio } from "@/lib/storage";
 
 async function find(ctx: RouteContext<"/api/recordings/[id]">) {
   const { id } = await ctx.params;
@@ -19,11 +19,11 @@ export async function GET(request: NextRequest, ctx: RouteContext<"/api/recordin
 }
 
 /**
- * Local storage only: the raw audio for a new take. (With Vercel Blob the
- * browser uploads straight to Blob instead — see ../upload/route.ts.)
+ * The raw audio for a new take, when the browser can't upload straight to
+ * Blob (local dev, or a Blob store connected without a read-write token).
  */
 export async function PUT(request: NextRequest, ctx: RouteContext<"/api/recordings/[id]">) {
-  if (storageMode !== "local") return new Response("Upload to Blob instead", { status: 405 });
+  if (uploadMode !== "api") return new Response("Upload to Blob directly instead", { status: 405 });
   const { id } = await ctx.params;
   const mimeType = baseMimeType(request.headers.get("content-type"));
   if (!isValidId(id)) return new Response("Bad id", { status: 400 });
@@ -33,7 +33,7 @@ export async function PUT(request: NextRequest, ctx: RouteContext<"/api/recordin
   if (audio.length === 0) return Response.json({ error: "Empty recording" }, { status: 400 });
   if (audio.length > MAX_AUDIO_BYTES) return Response.json({ error: "Recording too large" }, { status: 413 });
 
-  await writeLocalAudio(audioPathname(audioFileName(id, mimeType)), audio);
+  await writeAudio(audioPathname(audioFileName(id, mimeType)), audio, mimeType);
   return new Response(null, { status: 204 });
 }
 

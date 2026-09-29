@@ -1,5 +1,5 @@
 import RecordingStudio from "@/components/RecordingStudio";
-import { storageMode } from "@/lib/storage";
+import { uploadMode } from "@/lib/storage";
 
 export default function Home() {
   return (
@@ -14,7 +14,7 @@ export default function Home() {
         </p>
 
         <div className="mt-10">
-          <RecordingStudio storage={storageMode} />
+          <RecordingStudio storage={uploadMode} />
         </div>
       </div>
     </main>

@@ -1,8 +1,8 @@
 /**
  * Where recordings live.
  *
- * - With BLOB_READ_WRITE_TOKEN set (a Vercel Blob store is connected): private
- *   Vercel Blob storage. Required when deployed — serverless disks are
+ * - With a Vercel Blob store connected (BLOB_READ_WRITE_TOKEN, or BLOB_STORE_ID
+ *   when Vercel wires the store up with OIDC instead): private Vercel Blob storage. Required when deployed — serverless disks are
  *   read-only and wiped between requests.
  * - Otherwise: the local `recordings/` folder, for `npm run dev`.
  *
@@ -16,7 +16,16 @@ import { BlobNotFoundError, del, get, head, list, put } from "@vercel/blob";
 
 export type StorageMode = "blob" | "local";
 
-export const storageMode: StorageMode = process.env.BLOB_READ_WRITE_TOKEN ? "blob" : "local";
+export const storageMode: StorageMode =
+  process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_STORE_ID ? "blob" : "local";
+
+/**
+ * How the browser sends audio. Direct-to-Blob uploads need the read-write
+ * token to mint client tokens; without it, audio goes through our API
+ * (subject to Vercel's 4.5 MB request limit, roughly 10 minutes of audio).
+ */
+export type UploadMode = "blob-direct" | "api";
+export const uploadMode: UploadMode = storageMode === "blob" && process.env.BLOB_READ_WRITE_TOKEN ? "blob-direct" : "api";
 
 /** True when we're deployed but nobody has connected a Blob store yet. */
 export const storageMissing = storageMode === "local" && !!process.env.VERCEL;
@@ -88,8 +97,12 @@ const localStore: Store = {
   },
 };
 
-/** Local-only: the browser PUTs audio to our API, which writes it here. */
-export async function writeLocalAudio(pathname: string, data: Buffer) {
+/** For uploadMode "api": the browser PUTs audio to our API, which stores it here. */
+export async function writeAudio(pathname: string, data: Buffer, contentType: string) {
+  if (storageMode === "blob") {
+    await put(pathname, data, { access: "private", contentType, addRandomSuffix: false, allowOverwrite: false });
+    return;
+  }
   await mkdir(path.dirname(local(pathname)), { recursive: true });
   await writeFile(local(pathname), data);
 }
